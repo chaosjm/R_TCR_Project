@@ -1,6 +1,9 @@
 # R_TCR_Project
 A project done for TCR course done in R.
+
 Based on the data from the paper:
 Lozano AX, Chaudhuri AA, Nene A, Bacchiocchi A, Earland N, Vesely MD, Usmani A, Turner BE, Steen CB, Luca BA, Badri T, Gulati GS, Vahid MR, Khameneh F, Harris PK, Chen DY, Dhodapkar K, Sznol M, Halaban R, Newman AM. T cell characteristics associated with toxicity to immune checkpoint blockade in patients with melanoma. Nat Med. 2022 Feb;28(2):353-362. doi: 10.1038/s41591-021-01623-z
+
 Requires the packages: immunarch, vegan, tidyverse, plotly, "RColorBrewer", uwot, survival, pROC, survminer, ggplot2.
+
 In brief: In this project, we analyzed the data from the research of Lozano et al. 2022 on the toxicity of immune checkpoint inhibitors (ICIs) treatment in patients with metastatic melanoma, specifically Severe immune-related adverse events (irAEs). The researchers indicated on two pre-treatment factors in the blood circulation: activated CD4 memory T cell abundance and T-cell repertoire (TCR) diversity, that are associated with severe irAE development regardless of organ system involvement. Moreover, the research's results suggest an association between circulating T cell characteristics and ICI-induced toxicity. Using the peripheral blood, single-cell and bulk profiling modalities, the researchers identified common T cell features linked to the development of severe irAEs within three months of treatment initiation. These findings led the researchers to develope predictive models of irAE development and explored their utility for pre-treatment and early on-treatment identification of ICI-induced toxicity. We focused on the experiment the researchers performed on T cell clonal dynamics from bulk peripheral blood mononuclear cells (PBMCs). The analysis was performed on 15 patients treated with combination ICIs before and after treatment (note: they emphasize that no patients had on-treatment peripheral blood collected after the onset of severe irAE).
