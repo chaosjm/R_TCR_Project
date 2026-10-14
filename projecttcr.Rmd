@@ -1,0 +1,623 @@
+---
+title: "ProjectTCR"
+output: pdf_document
+date: "2023-08-08"
+---
+
+```{r setup, message=FALSE}
+library(immunarch)
+library(vegan)
+library(tidyverse)
+library(plotly)
+library("RColorBrewer")
+library(uwot)
+library(survival)
+library(pROC)
+library(survminer)
+library(ggplot2)
+```
+##Introduction
+
+In this project, we'll analyze the data from the research of Lozano et al. (1) on the toxicity of immune checkpoint inhibitors (ICIs) treatment in patients with metastatic melanoma, specifically Severe immune-related adverse events (irAEs). The researchers indicated on two pre-treatment factors in the blood circulation: activated CD4 memory T cell abundance and T-cell repertoire (TCR) diversity, that are associated with severe irAE development regardless of organ system involvement. Moreover, the research's results suggest an association between circulating T cell characteristics and ICI-induced toxicity. Using the peripheral blood, single-cell and bulk profiling modalities, the researchers identified common T cell features linked to the development of severe irAEs within three months of treatment initiation. These findings led the researchers to develope predictive models of irAE development and explored their utility for pre-treatment and early on-treatment identification of ICI-induced toxicity.
+We'll focus on the experiment the researchers performed on T cell clonal dynamics from bulk peripheral blood mononuclear cells (PBMCs). The analysis was performed on 15 patients treated with combination ICIs before and after treatment (note: they emphasize that no patients had on-treatment peripheral blood collected after the onset of severe irAE). 
+Thus, our data is:
+
+```{r Melonoma TCR data, message = FALSE, warning = FALSE}
+# Loading tsv files from path
+file_path <- paste0(system.file(package = "immunarch"), "/Users/dr.juliamonte-cristo/Lozano_etal_Supporting_Data/ImmunoSEQ")
+mtcr <- repLoad("/Users/dr.juliamonte-cristo/Lozano_etal_Supporting_Data/ImmunoSEQ")
+#Replacing NA in the data with 0
+mtcr$data[is.na(mtcr$data)] <- 0
+```
+
+## Data Metrics
+
+To determine the effect we need to compare the variability of the T-cell repertoire (TCR) before and after treatment. One parameter to estimate this is the richness of repertoires. We'll use the Immunarch's function repDiversity in a number of methods. The first is the total number of unique clonotypes, the richness:
+
+```{r Richness of repertoires}
+
+Chao1 <- repDiversity(mtcr$data, .method = "Chao1") 
+vis(Chao1, .meta = mtcr$meta)  
+```
+The researchers in the paper used the Gini-Simpson index, Shannon entropy and Pielou’s evenness index to determine the diversity of TCR. First, for the Gini-Simpson index we'll use the Immunarch package.
+
+```{r Gini-Simpson diversity of repertoires}
+repDiversity(mtcr$data, .method = "gini.simp") %>% vis(.meta = mtcr$meta)  
+```
+Due to to the fact that the Shannon diversity calculation is not included in the Immunarch package, we'll use the vegan package. To calculate the Shannon diversity index of repertoires:
+
+```{r Shannon diversity of repertoires}
+pati <- list.files("/Users/dr.juliamonte-cristo/Lozano_etal_Supporting_Data/ImmunoSEQ")
+pati <- fs::path_ext_remove(pati)
+shan_ind <- c()
+for(i in 1:length(mtcr$data)){
+  shan_ind[i] <- diversity(mtcr$data[[i]][1], index = "shannon") 
+}
+shan_pati <- cbind(data.frame(pati), data.frame(shan_ind))
+barplot(shan_pati$shan_ind ~ shan_pati$pati, space=0, 
+                  col = brewer.pal(30, name = "Paired"), 
+                  ylim=c(0,12), panel.first=grid(NA,NULL, lty=2),
+                  xlab="Patients", ylab="Shanon index",
+                  main="Shannon diversity index of repertoires", las = 3, 
+                  cex.names = 0.4)
+```  
+
+Then, using the Pielou’s evenness index definition, we can calculate its value in our data as follows:
+
+```{r Pielou’s evenness index, warning=FALSE}
+logrichness <- log(Chao1[,1])
+evenness <- (shan_pati$shan_ind)/logrichness
+shan_pati["evenness"] <- evenness 
+barplot(shan_pati$evenness ~ shan_pati$pati, space=0, 
+                  col = brewer.pal(30, name = "Paired"), 
+                  panel.first=grid(NA,NULL, lty=2),
+                  xlab="Patients", ylab="Pielou’s evenness index",
+                  main="Pielou’s evenness index of repertoires", las = 3, 
+                  cex.names = 0.4)
+```
+
+To asses the suitability of the two indexes above to our data, we'll need to check other repertoire diversity indexes to see a better fit. The first will be 
+Hill's diversity index of repertoires:
+
+```{r Hills diversity of repertoires, warning=FALSE}
+repDiversity(mtcr$data, .method = "hill") %>% vis(.meta = mtcr$meta)  
+```
+
+The second will be the D50 diversity index of repertoires:
+
+```{r D50 diversity of repertoires}
+
+repDiversity(mtcr$data, .method = "d50") %>% vis(.meta = mtcr$meta)  
+```
+
+When comparing the four indexes (and others, data not shown), we can see that both the Shannon diversity index and the Pielou’s evenness index are less sensitive to the subtle diversification of TCR, at least in our data. Especially when comparing the effect of ICI on the TCR, the Hill's diversity index didn't help in differentiating the before and after effect for each sample. In contrast, not only did the D50 diversity index help in differentiating before and after effects of ICI and indicated the subtle diversification of TCR, but it also closely coincided with the richness parameter as observed before (Chao1).
+Taking the Richness of repertoires and the D50 diversity index together, we can see that the effect of ICI is inconclusive. In some patients the treatment pushed the diversification TCR greatly (for example: WUMENLO and YUDEBIT), while in others it did quite the opposite (for example: YUCADA and YUHERN).
+To understand the underlying processes and effects of the ICI treatment, we'll examine the clonotypes more closely. First, by visualizing the relative abundance of clonotypes:
+
+```{r abundance of clonotypes}
+repClonality(mtcr$data, "homeo") %>% vis() 
+```
+
+The clonotype abundance also indicates on contradicting outcomes of the treatment on different patients. While in some it diversified the clonotype groups in a patients (such as YUALOE and YUTACI), in others it did the opposite effect or no effect at all (such as YUBROMO, YUHONEY and YUPESO). We can map the difference between the before and after treatment in clonotypes by building a heatmap of clonotypes shared between repertoires:
+
+```{r heatmap of public clonotypes shared between repertoires}
+repOverlap(mtcr$data, "public") %>% vis( "heatmap2") 
+repOverlap(mtcr$data, "jaccard") %>% vis( "heatmap2") 
+repOverlap(mtcr$data, "morisita") %>% vis( "heatmap2") 
+```
+The heatmap also indicates on a variety of effects of the treatment on the TCR of different patients. Hence, we'll need to find the difference elsewhere.
+The researchers in this experiment emphasized the CDR3 sequences comparison as an indicator for cross-references. Therefore, we'll start with looking at the distributions of clonotypes per CDR3 length:
+
+```{r distributions of clonotypes per CDR3 length,  message=FALSE, warning=FALSE}
+dccl <- lapply(mtcr$data, spectratype, .col = "aa+v") 
+lapply(dccl, vis)
+```
+
+with the visualizing the length distribution of CDR3:
+
+```{r length distribution of CDR3}
+repExplore(mtcr$data, "lens") %>% vis() 
+```
+
+We can see that still there isn't one conclusive feature of the effect of before and after ICI treatment. However, we may see here a difference within the variable segments of the CDR (V-gene) itself. Which leads us to visualize the V-gene gene usage in the repertoires:
+
+```{r V-gene distribution, message=FALSE, warning=FALSE}
+vgdr <- lapply(mtcr$data, geneUsage) 
+lapply(vgdr, vis)
+```
+
+In first glance, we do see an effect in the copy number of the V-gene of each repertoire, which makes sense since this is the more adaptable area in a the T cell receptor. However, is this a sign of toxicity of the treatment or an non-toxic immunological response to an acute treatment? We might find an answer for that in the sequence itself:   
+
+```{r k-mer statistics of immune repertoires}
+kmers_mtcr <- lapply(mtcr$data, getKmers, 6)
+lapply(kmers_mtcr, vis)
+```
+Here we do see a change in sequence representation in the repertoire. However, what are those changes and what do they mean, the above tests give only a general sense, but no concrete indication. Hence, a more thorough analysis is required.
+
+## Feature selection
+
+For this section, we'll first have to normalize our data that will enable calculating the correlations between the samples: 
+
+```{r correlations}
+mtcrnorm <- geneUsage(mtcr$data, "hs.trbv", .norm = T)
+mtcrnorm <- mtcrnorm[-1,]
+mtcr_cor <- geneUsageAnalysis(mtcrnorm, .method = "cor", .cor = c("pearson", "kendall", "spearman"),.do.norm = TRUE, .verbose = F)
+vis(mtcr_cor, .title = "Gene usage correlation", .leg.title = "Cor", .text.size = 1.5)
+```
+
+This correlation matrix except patient WUMENLO, shows high correlation between the before and on treatment for each patient (0.95-1). This result can strengthen our previous conclusion that the difference in treatment is inconclusive. However, it may also suggest that the data has a background noise that may mask the difference. We can check the latter notion by hierarchical clustering and calculating the optimal number of clusters as follows: 
+
+```{r hierarchical clustering, message=FALSE, warning=FALSE}
+mtcrnorm[is.na(mtcrnorm)] <- 0 ##just in case
+vis(geneUsageAnalysis(mtcrnorm, "cosine+hclust", .verbose = F))
+```
+
+We can see from the hierarchical clustering that samples from the same patient diverge in many levels. Moreover, that our data has an optimal number of clusters of 17. If we have 2 samples from 15 patients, we need to cluster more than a half of the data, which is not good. Hence, we can use feature selection to reduce the number of optimal clusters. In the research paper the feature selection methods were PCA, t-SNE and UMAP. The first two are included in Immunarch package:   
+
+```{r PCA and t-SNE}
+mtcr_cl_pca <- geneUsageAnalysis(mtcrnorm, "js+pca+kmeans", .k=4, .verbose = F)
+mtcr_cl_pca2 <- geneUsageAnalysis(mtcr_cor, "pca+kmeans", .k = 5, .verbose = F)
+mtcr_cl_tsne <- geneUsageAnalysis(mtcrnorm, "js+tsne+kmeans",  .k=5, .perp = .01, .verbose = F)
+p1 <- vis(mtcr_cl_pca, .plot = "clust") ###paper
+p2 <- vis(mtcr_cl_tsne, .plot = "clust") ###paper
+p1
+vis(mtcr_cl_pca2, .title ="PCA2")
+p2
+```
+
+The Immunarch package suggests two ways of performing PCA. In the first way, we got a separation to clusters with 4 clusters (less than the other methods, data not shown). However, these clusters are small and might not represent the our data properly. Thus, we used the second method and it indicated that the optimal number of clusters is 5. This way produces two uneven in size clusters and three samples as outliers. Which leads us to search for a method more suited to the data, t-SNE. This method produced 5 distinct clusters with a good separation that emphasizes how 2 samples from the same patient differ greatly that they are more similar to samples from other patients.  
+The third method used in the research paper was UMAP, that is not included in the Immunarch package. Hence, we used the Uwot and Plotly packages for that:
+
+```{r Umap}
+mtcr_cl_umap <- umap(mtcrnorm)
+mtcr_cl_umap <- data.frame(mtcr_cl_umap)
+final <- cbind(mtcr_cl_umap, mtcrnorm$Names) 
+plot_ly(final, x = ~X1, y = ~X2, colors = c('#636EFA','#EF553B','#00CC96'), type = 'scatter', mode = 'markers')%>% layout(plot_bgcolor = "#e5ecf6", legend=list(title=list(text='Patients')), 
+xaxis = list(title = "UMAP1"), yaxis = list(title = "UMAP2"))
+```
+
+The analysis shows three distinct clusters. However, the reasoning behind this separation is unclear. Moreover, which feature makes the different samples from different patients more similar and in the same cluster, rather than the samples from the same patient (as seen in the t-SNE analysis). To answer these question we need to use machine learning.
+
+## Machine learning
+
+Since we want to know whether there is a toxicity of immune checkpoint inhibitors (ICIs) treatment in patients with metastatic melanoma, specifically Severe immune-related adverse events (irAEs), the researchers chose logistic regression, a supervised machine learning algorithm. Logistic regression can provide the probability whether the hypothesis is plausible and able to classify data using continuous and discrete datasets. For this purpose, the researchers gave additional data on their subjects:
+
+```{r Supplementry data}
+supmtcr <- read.delim("/Users/dr.juliamonte-cristo/Lozano_etal_Supporting_Code/model_input.txt") 
+```
+
+For the logistic regression, the researchers used the packages survival, pROC and survminer. The survival and survminer packages are used for analyzing the clinical significance before and after treatment. The pROC package analyzes the success of the model received by generating ROC curves.
+First, the researchers defined that all activated CD4 T cell values identified as outliers in the composite model function are 0f 10% false discovery rate.
+
+```{r activated CD4 T cell values outliers}
+actCD4mem_ceiling <- 0.1 
+```
+
+Next, the researchers defined a composite model function for the training and validation sets using the validation method LOOCV (Leave One Out Cross-Validation), a cross-validation approach in which each observation is considered as the validation set and the rest (N-1) observations are considered as the training set. However, the LOOCV is not present in all samples, and thus, if it is absent, the outliers value will be replaced with the maximum value of the non-outliers. In both cases, afterwards a binomial logistic regression is performed with a following optimization.   
+
+```{r Composite model}
+makeCompositeModel <- function(input, index, actCD4mem_ceiling, LOOCV){
+  
+    if(!LOOCV){
+        AMCD4 <- input$Activated_CD4_memory_T_CSx
+        mx <- max((AMCD4[index])[which(AMCD4[index]<actCD4mem_ceiling)])
+        AMCD4[which(AMCD4 > mx)] <- mx
+        input$AMCD4 <- AMCD4
+        #####
+
+        #Train logistic regression model ('composite model') on activated CD4 memory T cell abundance and TCR Shannon entropy using patient subset defined by 'index'
+        rf <- glm(formula=as.factor(Severe_irAE)~AMCD4 + TCR_clonotype_diversity_ShannonEntropy,data=input[index,],family="binomial")
+        #Run composite model on all points
+        out <- predict(rf, input,type=c("response"))
+        modelPred <- out
+        input$CompositeModel <- modelPred #Continuous model results
+        
+    }else{
+        
+        #Leave-one-out cross-validatoin (LOOCV)
+        input2 <- input
+        
+        for(i in 1:nrow(input)){
+            
+            ##### replace outliers with max value of non-outliers
+            AMCD4 <- input$Activated_CD4_memory_T_CSx
+            mx <- max((AMCD4[-i])[which(AMCD4[-i]<actCD4mem_ceiling)])
+            AMCD4[which(AMCD4 > mx)] <- mx
+            input2$AMCD4 <- AMCD4
+            #####
+
+            #Train logistic regression model ('composite model') on activated CD4 memory T cell abundance and TCR Shannon entropy using patient subset using LOOCV
+            rf <- glm(formula=as.factor(Severe_irAE)~AMCD4 + TCR_clonotype_diversity_ShannonEntropy,data=input2[-i,],family="binomial")
+            #Run composite model on all points
+            out <- predict(rf, input2,type=c("response"))
+            modelPred <- out
+            input$CompositeModelLOOCV[i] <- modelPred[i] #Continuous model results
+            
+            #Optimize split using Youden's J statistic
+            g <- pROC::roc(as.factor(input2$Severe_irAE[-i]) ~ modelPred[-i], data=input2)
+            cutp <- g$thresholds[which.max(g$sensitivities+g$specificities)]
+            
+            if(modelPred[i] > cutp)  input$BinaryModelLOOCV[i] <- 1
+            else input$BinaryModelLOOCV[i] <- 0
+        }
+    }
+    input #return input
+}
+```
+
+The next function the researchers used is the AUC calculation. Since they chose to perform LOOCV, AUC calculation can give a better estimation than accuracy in imbalanced datasets. Meaning, AUC calculation considers the performance across all possible classification thresholds rather than at a single threshold that determines the accuracy.
+
+```{r AUC calculation}
+#Calculate AUC of composite model in patient subset 'index'
+calculateAUC <- function(input, index, LOOCV){
+    
+    if(!LOOCV){
+        suppressMessages(g <- pROC::roc(as.factor(input$Severe_irAE[index]) ~ CompositeModel[index], data=input))
+    }else{
+        suppressMessages(g <- pROC::roc(as.factor(input$Severe_irAE[index]) ~ CompositeModelLOOCV[index], data=input))
+    }
+    g #return AUC model
+}
+```
+
+In the next function of binarizing the logistic regression model, the researchers convert the predicted probabilities given in the model into binary outcomes using a threshold. Binarizing can help receive a clearer binary decision rather than a probability. Moreover, binarizing a logistic regression model requires choosing a threshold probability above which you classify instances as belonging to one class and below which they belong to the other class. In this case, the researchers chose the threshold as the maximal sum of the optimized sensitivity and specificity as calculated Youden’s J statistic to prevent over-fitting.
+
+```{r Binarizing the composite model}
+#Optimize split using Youden's J statistic and generate binary composite model
+binarizeModel <- function(input, g){
+
+    cutp <- g$thresholds[which.max(g$sensitivities+g$specificities)]
+    q <- rep(0,nrow(input))
+    q[which(input$CompositeModel>=cutp)] <- 1
+    input$BinaryModel <- q
+    input #return input
+}
+```
+
+The next function calculates the Cox proportional hazard ratio used in survival analysis. The hazard ratio is a measure of the relative hazard or risk of a treatment, in our case the relative hazard of the ICIs treatment.
+
+```{r Cox proportional hazard ratio}
+#Get hazard ratio of binary composite model
+getCox <- function(input, index, LOOCV){
+    
+    if(!LOOCV){
+        mod <- suppressWarnings(summary(coxph(Surv(Time_to_severe_irAE_months, Severe_irAE) ~ BinaryModel, data = input[index,])))
+    }else{
+        mod <- suppressWarnings(summary(coxph(Surv(Time_to_severe_irAE_months, Severe_irAE) ~ BinaryModelLOOCV, data = input[index,])))
+    }
+    c(mod$coefficients[1,2],mod$sctest[3])
+}
+```
+
+The final function plots the data received in previous functions according to severe irAE time of eruption if indeed it happen.
+
+```{r Plot}
+makeKMplot <- function(input, index, label, LOOCV){
+    if(!LOOCV){
+        fit <- survfit(Surv(Time_to_severe_irAE_months, Severe_irAE) ~ BinaryModel, data = input[index,])
+    }else{
+        fit <- survfit(Surv(Time_to_severe_irAE_months, Severe_irAE) ~ BinaryModelLOOCV, data = input[index,])
+    }
+    ggsurvplot(fit, data = input[index,], risk.table = TRUE, pval = TRUE, xlim=c(0,4),break.time.by = 1, risk.table.y.text = FALSE, palette=c("#1B76FF","#BD111D"), xlab="Months after treatment initiation", ylab="Fraction free from severe irAE", censor=F)
+}
+```
+
+With these functions at hand, we can perform the analysis. First, we'll train and test as described above comparing all patients to those receiving combination treatment and PD1 therapy only. The researchers first to understand if there is a correlation between severe irAE development and TCR diversity with or without effector memory (EM) cell states.  
+Correlation between severe irAE development and TCR diversity with EM cell states:
+
+```{r Correlation between severe irAE development and TCR diversity with EM cell states}
+#Train on Bulk cohort 1 (all patients)
+train_lab <- "Bulk cohort 1"
+
+train <- which(supmtcr$Cohort==train_lab)
+supmtcr <- makeCompositeModel(supmtcr, train, actCD4mem_ceiling, FALSE)
+AUCtrain <- calculateAUC(supmtcr, train, FALSE)
+supmtcr <- binarizeModel(supmtcr, AUCtrain)
+#Write composite model to disk
+write.table(data.frame(PID=rownames(supmtcr),CompositeModel=supmtcr$CompositeModel,BinaryModel=supmtcr$BinaryModel), sep="\t",quote=F)
+
+#Test on Bulk cohort 2 (all patients)
+test_lab <- "Bulk cohort 2"
+label2 <- paste("Train_",gsub(" ","",train_lab),"_Test_", gsub(" ","",test_lab), sep="")
+test <- which(supmtcr$Cohort==test_lab)
+
+#Calculate AUC on test cohort (all patients)
+AUCtest <- calculateAUC(supmtcr, test, FALSE)
+cat(paste("Correlation between severe irAE development and TCR diversity with EM cell states | Train:",train_lab,", Test: ", test_lab,", AUC: ",round(AUCtest$auc,3), "\n", sep=""))
+
+#Test on Bulk cohort 2 (combination therapy patients)
+test_lab <- "Bulk cohort 2"
+test_lab2 <- "Combination"
+label2 <- paste("Train_",gsub(" ","",train_lab),"_Test_", gsub(" ","",test_lab), gsub(" ","",test_lab2), sep="")
+test <- which(supmtcr$Cohort==test_lab & supmtcr$Therapy==test_lab2)
+
+#Calculate AUC on test cohort (combination therapy patients)
+AUCtest2 <- calculateAUC(supmtcr, test, FALSE)
+cat(paste("Correlation between severe irAE development and TCR diversity with EM cell states | Train:",train_lab,", Test: ", test_lab," ", test_lab2, ", AUC: ",round(AUCtest2$auc,3),"\n", sep=""))
+
+#Test on Bulk cohort 2 (PD1 therapy patients)
+test_lab <- "Bulk cohort 2"
+test_lab2 <- "Anti-PD1"
+label2 <- paste("Train_",gsub(" ","",train_lab),"_Test_", gsub(" ","",test_lab), gsub(" ","",test_lab2), sep="")
+test <- which(supmtcr$Cohort==test_lab & supmtcr$Therapy==test_lab2)
+
+#Calculate AUC on test cohort (PD1 therapy patients)
+AUCtest3 <- calculateAUC(supmtcr, test, FALSE)
+cat(paste("Correlation between severe irAE development and TCR diversity with EM cell states | Train:",train_lab,", Test: ", test_lab," ", test_lab2, ", AUC: ",round(AUCtest3$auc,3),"\n", sep=""))
+
+#Combined AUC plot
+plot(AUCtest, las=1, col="#FFBF19",lwd=2.5, cex.lab=1.2, cex.axis=1.2)
+plot(AUCtest3, col="#BDBDBD",lwd=2.5, add=T)
+plot(AUCtest2, col="#1F4DE6",lwd=2.5, add=T)
+legend("bottomright", legend=c(paste("Both therapies\nAUC = ",round(AUCtest$auc,2),"\n",sep=""), paste("Combination\nAUC = ",round(AUCtest2$auc,2),"\n",sep=""),paste("PD1\nAUC = ",round(AUCtest3$auc,2),"\n",sep="")),
+col=c("#FFBF19", "#1F4DE6", "#BDBDBD"), lty=1, cex=0.8, bty = "n")
+```
+
+Correlation between severe irAE development and TCR diversity without EM cell states:
+
+```{r Correlation between severe irAE development and TCR diversity without EM cell states}
+
+#Train on Combination therapy patients
+train_lab <- "Combination"
+
+train <- which(supmtcr$Therapy==train_lab)
+supmtcr <- makeCompositeModel(supmtcr, train, actCD4mem_ceiling, FALSE)
+AUCtrain <- calculateAUC(supmtcr, train, FALSE)
+supmtcr <- binarizeModel(supmtcr, AUCtrain)
+#Write composite model to disk
+write.table(data.frame(PID=rownames(supmtcr),CompositeModel=supmtcr$CompositeModel,BinaryModel=supmtcr$BinaryModel),sep="\t",quote=F)
+
+#Test on PD1 monotherapy patients
+test_lab <- "Anti-PD1"
+label2 <- paste("Train_",gsub(" ","",train_lab),"_Test_", gsub(" ","",test_lab), sep="")
+test <- which(supmtcr$Therapy==test_lab)
+
+#Calculate AUC on test cohort (all patients)
+AUCtest <- calculateAUC(supmtcr, test, FALSE)
+cat(paste("Correlation between severe irAE development and TCR diversity without EM cell states | Train:",train_lab,", Test: ", test_lab,", AUC: ",round(AUCtest$auc,3), "\n", sep=""))
+
+#Train on PD1 therapy patients
+train_lab <- "Anti-PD1"
+
+train <- which(supmtcr$Therapy==train_lab)
+supmtcr <- makeCompositeModel(supmtcr, train, actCD4mem_ceiling, FALSE)
+AUCtrain <- calculateAUC(supmtcr, train, FALSE)
+supmtcr <- binarizeModel(supmtcr, AUCtrain)
+#Write composite model to disk
+write.table(data.frame(PID=rownames(supmtcr),CompositeModel=supmtcr$CompositeModel,BinaryModel=supmtcr$BinaryModel),sep="\t",quote=F)
+
+#Test on Combination therapy patients
+test_lab <- "Combination"
+label2 <- paste("Train_",gsub(" ","",train_lab),"_Test_", gsub(" ","",test_lab), sep="")
+test <- which(supmtcr$Therapy==test_lab)
+
+#Calculate AUC on test cohort (all patients)
+AUCtest2 <- calculateAUC(supmtcr, test, FALSE)
+cat(paste("Correlation between severe irAE development and TCR diversity without EM cell states | Train:",train_lab,", Test: ", test_lab,", AUC: ",round(AUCtest2$auc,3), "\n", sep=""))
+
+#Combined AUC plot
+plot(AUCtest, las=1, col="#BDBDBD",lwd=2.5, cex.lab=1.2, cex.axis=1.2)
+plot(AUCtest2, col="#1F4DE6",lwd=2.5, add=T)
+legend("bottomright", legend=c(paste("Train on PD1,\ntest on combination\nCombination AUC = ",round(AUCtest2$auc,2),"\n",sep=""), paste("Train on combination,\ntest on PD1\nPD1 AUC = ",round(AUCtest$auc,3),"\n",sep="")),
+col=c("#1F4DE6","#BDBDBD"), lty=1, cex=0.8, bty = "n")
+```
+
+The first AUC graph shows that the correlation between severe irAE development and TCR diversity with EM cell states in sensitivity and specificity is more significant in anti-PD-1 and anti-CTLA-4 combination ICIs treatment or both together (0.9-1), rather than anti-PD-1 alone (0.82). However, to understand whether the correlations observed in anti-PD-1 and anti-CTLA-4 combination ICIs treatment aren't a result of over-fitting, an additional analysis was performed. Without EM cell states and data sets trained on one treatment and tested on the other, the analysis still indicate that a combination treatment has a higher correlation between severe irAE development and TCR diversity (0.88) rather than PD-1 treatment alone (0.795).
+For the next step of testing the composite model's accuracy in predicting time-to-severe irAE, the researchers performed Kaplan-Meier analysis for freedom from severe irAE. Meaning, after training the model on bulk cohort 1, the researchers checked the score of the composite model in bulk cohort 2 for patients treated with combination or PD1 immune checkpoint blockade (FNote including patients YUMEDIC and YUDIME that changed therapy due to progression within 3 months of ICI treatment initiation). Additionally, statistical significance was calculated by a two-sided log-rank test, so that in all panels, the cut-point predicting severe irAE was optimized according to bulk cohort 1 using Youden’s J statistic. 
+
+```{r Kaplan-Meier analysis}
+
+#Train on Bulk cohort 1
+train_lab <- "Bulk cohort 1"
+
+train <- which(supmtcr$Cohort==train_lab & !(rownames(supmtcr) %in% c("YUMEDIC", "YUDIME")))
+supmtcr <- makeCompositeModel(supmtcr, train, actCD4mem_ceiling, FALSE)
+AUCtrain <- calculateAUC(supmtcr, train, FALSE)
+supmtcr <- binarizeModel(supmtcr, AUCtrain)
+
+#Write composite model to disk
+write.table(data.frame(PID=rownames(supmtcr),CompositeModel=supmtcr$CompositeModel,BinaryModel=supmtcr$BinaryModel),paste("CompositeModel_RmEarlyProgressors_Train_",gsub(" ","",train_lab),".txt", sep=""),sep="\t",quote=F)
+
+#Test on Bulk cohort 2 (all patients)
+test_lab <- "Bulk cohort 2"
+label2 <- paste("Train_",gsub(" ","",train_lab),"_Test_", gsub(" ","",test_lab),"_RmEarlyProgressors", sep="")
+test <- which(supmtcr$Cohort==test_lab)
+
+#Calculate AUC and Hazard Ratio on test cohort
+AUCtest <- calculateAUC(supmtcr, test, FALSE)
+HRtest <- getCox(supmtcr, test, FALSE)
+cat(paste("All patients| Train:",train_lab,", Test: ", test_lab,", HR: ",round(HRtest[1],3), ", Logrank p-value: ",round(HRtest[2],4), "\n", sep=""))
+makeKMplot(supmtcr, test, "All patients", FALSE)
+
+#Test on Bulk cohort 2 (combination therapy patients)
+test_lab <- "Bulk cohort 2"
+test_lab2 <- "Combination"
+label2 <- paste("Train_",gsub(" ","",train_lab),"_Test_", gsub(" ","",test_lab),test_lab2,"_RmEarlyProgressors", sep="")
+test <- which(supmtcr$Cohort==test_lab & supmtcr$Therapy==test_lab2)
+
+#Calculate AUC on test cohort (combination therapy patients)
+AUCtest <- calculateAUC(supmtcr, test, FALSE)
+HRtest <- getCox(supmtcr, test, FALSE)
+cat(paste("Combination treatment| Train:",train_lab,", Test: ", test_lab, " ",test_lab2,", HR: ",round(HRtest[1],3), ", Logrank p-value: ",round(HRtest[2],4), "\n", sep=""))
+makeKMplot(supmtcr, test, "Combination treatment", FALSE)
+
+#Test on Bulk cohort 2 (PD1 therapy patients)
+test_lab <- "Bulk cohort 2"
+test_lab2 <- "Anti-PD1"
+label2 <- paste("Train_",gsub(" ","",train_lab),"_Test_", gsub(" ","",test_lab),test_lab2,"_RmEarlyProgressors", sep="")
+test <- which(supmtcr$Cohort==test_lab & supmtcr$Therapy==test_lab2)
+
+#Calculate AUC on test cohort (PD1 therapy patients)
+AUCtest <- calculateAUC(supmtcr, test, FALSE)
+HRtest <- getCox(supmtcr, test, FALSE)
+cat(paste("PD1 monotherapy| Train:",train_lab,", Test: ", test_lab, " ", test_lab2,", HR: ",round(HRtest[1],3), ", Logrank p-value: ",round(HRtest[2],4), "\n", sep=""))
+makeKMplot(supmtcr, test, "PD1 monotherapy", FALSE)
+```
+
+When the analysis was performed on all patients, most patients according to the model never experienced a severe irAE (P < 0.0001, hazard ratio = 11.6), except for patients in the high group that experienced severe irAEs 1.74 months on average after treatment initiation. Similar results were seen for each therapy type separately, but with lower significance (P < 0.025, HR = 8.3 and 14.8 for combination and PD-1, respectively). Meaning, the model was able to accurately predict severe irAE regardless of therapy type, age, sex and other key parameters. Moreover, the researchers repeated this experiment, but with the addition of LOOCV analysis: 
+
+```{r LOOCV analysis of the composite model, message=FALSE, warning=FALSE}
+
+#Train on all patients using LOOCV
+supmtcr <- makeCompositeModel(supmtcr, "", actCD4mem_ceiling, TRUE)
+
+#Write LOOCV composite model to disk
+write.table(data.frame(PID=rownames(supmtcr),CompositeModelLOOCV=supmtcr$CompositeModelLOOCV,BinaryModelLOOCV=supmtcr$BinaryModelLOOCV),paste("CompositeModelLOOCV_Train_",gsub(" ","",train_lab),".txt", sep=""),sep="\t",quote=F)
+
+#Calculate AUC on test cohort (all patients)
+AUCtest <- calculateAUC(supmtcr, 1:nrow(supmtcr), TRUE)
+cat(paste("LOOCV + composite model + all | Train:LOOCV, Test: All, AUC: ",round(AUCtest$auc,3), "\n", sep=""))
+
+#Test on Combination therapy patients
+test_lab <- "Combination"
+
+label2 <- paste("Train_LOOCV_Test_", gsub(" ","",test_lab), sep="")
+test <- which(supmtcr$Therapy==test_lab)
+
+#Calculate AUC on test cohort (combination therapy patients)
+AUCtest2 <- calculateAUC(supmtcr, test, TRUE)
+cat(paste("LOOCV + composite model + Combination | Train:LOOCV, Test: ", test_lab, ", AUC: ",round(AUCtest2$auc,3),"\n", sep=""))
+
+#Test on PD1 monotherapy patients
+test_lab <- "Anti-PD1"
+
+label2 <- paste("Train_LOOCV_Test_", gsub(" ","",test_lab), sep="")
+test <- which(supmtcr$Therapy==test_lab)
+
+#Calculate AUC on test cohort (combination therapy patients)
+AUCtest3 <- calculateAUC(supmtcr, test, TRUE)
+cat(paste("LOOCV + composite model + Anti-PD1 | Train:LOOCV, Test: ", test_lab, ", AUC: ",round(AUCtest3$auc,3),"\n", sep=""))
+
+#Combined AUC plot
+plot(AUCtest, las=1, col="#FFBF19",lwd=2.5, cex.lab=1.2, cex.axis=1.2)
+plot(AUCtest3, col="#BDBDBD",lwd=2.5, add=T)
+plot(AUCtest2, col="#1F4DE6",lwd=2.5, add=T)
+legend("bottomright", legend=c(paste("Both therapies\nAUC = ",round(AUCtest$auc,2),"\n",sep=""), paste("Combination\nAUC = ",round(AUCtest2$auc,2),"\n",sep=""),paste("PD1\nAUC = ",round(AUCtest3$auc,2),"\n",sep="")),
+col=c("#FFBF19", "#1F4DE6", "#BDBDBD"), lty=1, cex=0.8, bty = "n")
+```
+
+In this analysis the composite model yielded an AUC of 0.82 in testing on all patients, an AUC of 0.86 in combination therapy and an AUC of 0.71 on anti-PD1 treatment alone. This may indicate that testing the model on anti-PD1 lowers the accuracy of predicting severe irAEs, at least in theLOOCV analysis.
+These results led the researchers to check whether it's the LOOCV, or rather the inclusion of two patients that changed therapy due to progression within 3 months of ICI treatment initiation. Thus, the researchers repeated the analysis on combination and anti-PD1 treatments adding the Kaplan-Meier analysis to strengthen significance of the results and excluding the two patients:
+
+```{r LOOCV and Kaplan-Meier analysis on the composite model excluding the two outlier patients, message=FALSE, warning=FALSE}
+x2 <- makeCompositeModel(supmtcr[which(!(rownames(supmtcr) %in% c("YUMEDIC", "YUDIME"))),], "", actCD4mem_ceiling, TRUE)
+
+#Write LOOCV composite model to disk
+write.table(data.frame(PID=rownames(x2),CompositeModelLOOCV=x2$CompositeModelLOOCV,BinaryModelLOOCV=x2$BinaryModelLOOCV),paste("CompositeModelLOOCV_RmEarlyProgressors_Train_",gsub(" ","",train_lab),".txt", sep=""),sep="\t",quote=F)
+
+#Combination therapy patients
+test_lab <- "Combination"
+label2 <- paste("Train_LOOCV_Test_", gsub(" ","",test_lab),"_RmEarlyProgressors", sep="")
+test <- which(x2$Therapy==test_lab)
+
+AUCtest <- calculateAUC(x2, test, TRUE)
+HRtest <- getCox(x2, test, TRUE)
+cat(paste("Combination | Train:LOOCV, Test: ", test_lab,", HR: ",round(HRtest[1],3), ", Logrank p-value: ",round(HRtest[2],4), "\n", sep=""))
+makeKMplot(x2, test, "Figure5a", TRUE)
+
+#PD1 therapy patients
+test_lab <- "Anti-PD1"
+label2 <- paste("Train_LOOCV_Test_", gsub(" ","",test_lab),"_RmEarlyProgressors", sep="")
+test <- which(x2$Therapy==test_lab)
+
+AUCtest <- calculateAUC(x2, test, TRUE)
+HRtest <- getCox(x2, test, TRUE)
+cat(paste("Anti-PD1 | Train:LOOCV, Test: ", test_lab,", HR: ",round(HRtest[1],3), ", Logrank p-value: ",round(HRtest[2],4), "\n", sep=""))
+```
+
+This analysis showed better results with higher significance in combination therapy (P = 0.0028 and HR = 12.2) and in PD-1 therapy (P = 0.03 and HR = 9.0). 
+Although the model was trained on a single categorical outcome (severe versus no severe irAEs), the researchers decided to perform a non-parametric multi-factorial statistical test (Kruskal-Wallis test) on the performance of the model to predict the level of severity of irAE using a score. 
+
+```{r the performance score of the model in predicting the severity of irAE, message=FALSE, warning=FALSE}
+#composite model LOOCV by grade
+supmtcr <- makeCompositeModel(supmtcr, "", actCD4mem_ceiling, TRUE)
+d <- data.frame(model=supmtcr$CompositeModelLOOCV, grade=as.factor(supmtcr$irAE_grade), therapy=supmtcr$Therapy)
+d$grade[which(d$grade==0)] <- "1"
+d$grade[which(d$grade==1)] <- "1"
+p <- ggplot(d, aes(x=grade, y=model, fill=grade)) +
+  geom_boxplot(outlier.shape=NA, lwd=.75)
+p <- p + scale_fill_manual(values=c("#E4EEFF",  "#ACCFFF","#DDA5A4", "#FF9381"), guide="none") + theme_classic()
+p <- p + geom_point(pch=16, size=4,position=position_jitterdodge(0.5),  aes(color=grade))+ scale_color_manual(values=c("#B6C4CF",  "#68ABFF","#C56769", "#FC5C4A")) + theme(text = element_text(size=20), axis.text.x=element_text(colour="black", size=20),axis.text.y=element_text(colour="black", size=20),legend.position="bottom", axis.ticks.length = unit(.25, "cm"))+ scale_x_discrete(name="irAE grade") +
+  scale_y_continuous(name="Composite model score", limits=c(0,1), breaks=c(0,0.2,0.4,0.6,0.8,1))
+p
+cat(paste("Performance score of the model in predicting the severity of irAE | Kruskal-Wallis p-value: ",round(kruskal.test(d$model~d$grade,data=d)$p.value,6),"\n",sep=""))
+```
+
+These results show that the greater the severity of irAE, the better the composite model was able to predict irAE eruption (p < 0.000648). Although this result is positive and reinforces the robustness of the model, it is still questionable whether it's indeed robustness, or rather the limited sample size determined the results. Hence, the researchers tested the composite model LOOCV by grade for combination therapy only:
+
+```{r Composite model LOOCV by grade for combination therapy only, message=FALSE, warning=FALSE}
+
+supmtcr <- makeCompositeModel(supmtcr, "", actCD4mem_ceiling, TRUE)
+x2 <- supmtcr[which(supmtcr$Therapy=="Combination"),]
+d <- data.frame(model=x2$CompositeModelLOOCV, grade=as.factor(x2$irAE_grade), therapy=x2$Therapy)
+d$grade[which(d$grade==0)] <- "1"
+d$grade[which(d$grade==1)] <- "1"
+p <- ggplot(d, aes(x=grade, y=model, fill=grade)) +
+  geom_boxplot(outlier.shape=NA, lwd=.75)
+p <- p + scale_fill_manual(values=c("#E4EEFF",  "#ACCFFF","#DDA5A4", "#FF9381"), guide="none") + theme_classic()
+p <- p + geom_point(pch=16, size=4,position=position_jitterdodge(0.5),  aes(color=grade))+ scale_color_manual(values=c("#B6C4CF",  "#68ABFF","#C56769", "#FC5C4A")) + theme(text = element_text(size=20), axis.text.x=element_text(colour="black", size=20),axis.text.y=element_text(colour="black", size=20),legend.position="bottom", axis.ticks.length = unit(.25, "cm"))+ scale_x_discrete(name="irAE grade") +
+  scale_y_continuous(name="Composite model score", limits=c(0,1), breaks=c(0,0.2,0.4,0.6,0.8,1))
+p
+cat(paste("Composite model LOOCV by grade for combination therapy only | Kruskal-Wallis p-value: ",round(kruskal.test(d$model~d$grade,data=d)$p.value,5),"\n",sep=""))
+```
+
+As in the previous analysis, the graph indicates that the greater the severity of irAE, the better the composite model was able to predict irAE eruption (p < 0.01058). However, the sample size in this analysis is even smaller than the previous one. In both cases, it's unclear whether there is significance to the composite model or the small sample size creates skewness, specifically in this analysis.
+Next, the researchers checked whether the ability of the model to predict is associated with the number of symptoms:
+
+```{r The models performance score as a function of number of symptoms, message=FALSE, warning=FALSE}
+supmtcr <- makeCompositeModel(supmtcr, "", actCD4mem_ceiling, TRUE)
+d <- data.frame(model=supmtcr$CompositeModelLOOCV, gr2plus=as.factor(supmtcr$No_grade_2plus_irAE), therapy=supmtcr$Therapy)
+p <- ggplot(d, aes(x=gr2plus, y=model, fill=gr2plus)) +
+  geom_boxplot(outlier.shape=NA, lwd=.75)
+p <- p + scale_fill_manual(values=c("#E4EEFF",  "#9BACFA","#DDA5A4", "#FF9381"), guide="none") + theme_classic()
+p <- p + geom_point(pch=16, size=4,position=position_jitterdodge(0.5),  aes(color=gr2plus))+ scale_color_manual(values=c("#B6C4CF",  "#3557F5","#C56769", "#FC5C4A")) + theme(text = element_text(size=20), axis.text.x=element_text(colour="black",size=20),axis.text.y=element_text(colour="black", size=20),legend.position="bottom", axis.ticks.length = unit(.25, "cm"))+ scale_x_discrete(name="No. of symptomatic irAEs") + scale_y_continuous(name="Composite model score", limits=c(0,1), breaks=c(0,0.2,0.4,0.6,0.8,1))
+p
+cat(paste("The model's performance score as a function of number of symptoms | Kruskal-Wallis p-value: ",round(kruskal.test(d$model~d$gr2plus,data=d)$p.value,5),"\n",sep=""))
+```
+
+The composite model's scores increased when the number of symptomatic (grade 2+) irAEs experienced per patient grew significantly (p < 0.00814). Yet, the the sample size is still unrepresentative enough and is based on a single categorical training outcome. Hence, the results need to be further investigated on a greater sample size. This analysis was repeated also on the number of affected organs:
+```{r The models performance score as a function of number of affected organs, message=FALSE, warning=FALSE}
+supmtcr <- makeCompositeModel(supmtcr,"", actCD4mem_ceiling, TRUE)
+
+d <- data.frame(model=supmtcr$CompositeModelLOOCV,No_Organs=as.factor(supmtcr$No_organ_systems_irAE), therapy=supmtcr$Therapy)
+d$No_Organs[which(d$No_Organs==4)] <- "3"
+d$No_Organs[which(d$No_Organs==3)] <- "3"
+p <- ggplot(d, aes(x=No_Organs, y=model, fill=No_Organs)) +
+  geom_boxplot(outlier.shape=NA, lwd=.75)
+p <- p + scale_fill_manual(values=c("#E4EEFF",  "#9BACFA","#DDA5A4", "#FF9381"), guide="none") + theme_classic()
+p <- p + geom_point(pch=16, size=4,position=position_jitterdodge(0.5),  aes(color=No_Organs))+ scale_color_manual(values=c("#B6C4CF",  "#3557F5","#C56769", "#FC5C4A")) + theme(text = element_text(size=20), axis.text.x=element_text(colour="black", size=20),axis.text.y=element_text(colour="black", size=20),legend.position="bottom", axis.ticks.length = unit(.25, "cm"))+ scale_x_discrete(name="No. of organ system toxicities") + scale_y_continuous(name="Composite model score", limits=c(0,1), breaks=c(0,0.2,0.4,0.6,0.8,1))
+p
+cat(paste("The model's performance score as a function of number of affected organs | Kruskal-Wallis p-value: ",round(kruskal.test(d$model~d$No_Organs,data=d)$p.value,5),"\n",sep=""))
+```
+
+The composite model's scores increased slightly when the number of affected organs was higher, significantly (p < 0.00737). However, as stated before, the results need to be further investigated on a greater sample size to strengthen the conclusions of these analyses.
+
+## Discussion
+
+In conclusion, in this extensive report (maybe even overbearing) we tried to repeat the bioinformatic analyses done in Lozano et. al 2022 on the 15 bulk samples from patients treated with immune checkpoint inhibitors (ICIs) treatment in patients with metastatic melanoma before and after treatment, specifically those portraying Severe immune-related adverse events (irAEs) resulted from the treatment. In the report, we had three parts: the metrics of the data, feature selection. and the machine learning analyses. The first characterized the data metrics, the second to find the factors of TCR diversity between patients and the third was a repetition of the machine learning analyses performed in the paper. 
+In the data metrics part we compared mainly four indexes of diversity (and others, data not shown): Shannon diversity, Pielou’s evenness, Hill's diversity and D50 diversity. We saw that both the Shannon diversity index and the Pielou’s evenness index are less sensitive to the subtle diversification of TCR in our data. The Hill's diversity index didn't fit the data because the before and after effect of ICI's treatment for each sample wasn't distinctive. The D50 diversity suited the data on both aspects and resembled the richness parameter analysis results (Chao1).
+Moreover, we observed in the data metrics section that inconclusive clonotype abundance on the effect of the treatment on different patients. While in some it the clonotype groups in a patients (such as YUALOE and YUTACI) were diversed, in others it did the opposite effect or no effect at all (such as YUBROMO, YUHONEY and YUPESO). When mapping the differences between the before and after treatment in clonotypes by building a heatmap of clonotypes shared between repertoires, it indicates on a variety of effects of the treatment on the TCR of different patients that were incoclusive. We've tried comparing the CDR3 sequences as an was done in other parts of the Lozano et al. 2022 paper. When we visualized the V-gene gene usage in the repertoires, the more adaptable area in a the T cell receptor, we saw an effect in the copy number of the V-gene of each repertoire. A closer look on the sequence exhibited a change in sequence representation in the repertoire. However, all these analyses might indicate on changes, but their cause wasn't clear using these analyses stand-alone. Hence, we performed feature selection as was done in the next part.
+First, we created a correlation matrix that shows high correlation between the before and on treatment for each patient (0.95-1), except patient WUMENLO (0.88). To avoid a background noise effect, we performed hierarchical clustering and calculating the optimal number of clusters. This analysis didn't yield useful results since it suggested clustering more than a half of the data. To reduce the number of optimal clusters, we performed the feature selection methods used in the research paper: PCA, t-SNE and UMAP. The PCA analysis indicated that the optimal number of clusters is 5: two uneven in size clusters and three samples as outliers. In contrast, the t-SNE analysis produced 5 distinct clusters with a good separation for distinction. Lastly, UMAP portrayed three distinct clusters. However, the reasoning behind this separation is unclear. To conclude this part, the best feature selection method in our report for the data was t-SNE.
+In the final part, the machine learning, the method chosen was logistic regression, a supervised machine learning algorithm. The correlation between severe irAE development and TCR diversity with or without effector memory (EM) cell states showed that the correlation between severe irAE development and TCR diversity with EM cell states in sensitivity and specificity is more significant in anti-PD-1 and anti-CTLA-4 combination ICIs treatment or both treatments in any constellation (0.9-1), rather than anti-PD-1 alone (0.82). To avoid over-fitting, the different data sets were also trained on one treatment type and tested on the other, and yet a combination treatment had a higher correlation between severe irAE development and TCR diversity (0.88) rather than PD-1 treatment alone (0.795). When testing the model's accuracy in predicting time-to-severe irAE, the Kaplan-Meier analysis's results on all patients indicated indicated that most patients according to the model never experienced a severe irAE (P < 0.0001, hazard ratio = 11.6), except for patients in the high group that experienced severe irAEs 1.74 months on average after treatment initiation. Similar results were seen for each therapy type separately, but with lower significance (P < 0.025, HR = 8.3 and 14.8 for combination and PD-1, respectively). Repeating this experiment with the addition of LOOCV analysis yielded an AUC of 0.82 in testing on all patients, an AUC of 0.86 in combination therapy and an AUC of 0.71 on anti-PD1 treatment alone. Exclusion of two patients that changed therapy due to progression within 3 months of ICI treatment initiation showed better results with higher significance in combination therapy (P = 0.0028 and HR = 12.2) and in PD-1 therapy (P = 0.03 and HR = 9.0) in a Kaplan-Meier analysis. Given these results thus far, the model's ability to predict accurately severe irAEs eruption was good when tested on all patients and in combination treatment, but is less effective in predicting anti-PD1 treatment. It is even possible that anti-PD1 treatment lowers the overall accuracy of the model regardless of treatment.  
+The Kruskal-Wallis test on the performance of the model to predict the level of severity of irAE using a score, the results indicated that the greater the severity of irAE, the better the composite model was able to predict severe irAE eruption according to the severity level (p < 0.000648). When adding the LOOCV to this analysis, but on combination treatment only, we observed similar results, but with lower significance and sample size (p < 0.01058). In both analyses, it's unclear whether there is significance to the composite model or the small sample size created skewness. Similar analyses were performed on the ability of the model to predict association to the number of symptoms and number of affected organs. In both we see an increased score of the model's performance, the greater the number of symptoms   (p < 0.00814) and the number of organs affected (p < 0.00737), significantly. However, these results also require further investigation on a greater sample size to strengthen the conclusions of these analyses. Moreover, the model was trained on a single categorical outcome (severe versus no severe irAEs), which begs the question whether it's the model's robustness, or rather the limited sample size and skewness.
+In conclusion (of this exhausting report if you read thus far), since the scope of this report is limited, its conclusions are accordingly. Bulk RNA-seq is known as less accurate in comparison to scRNA-seq because there is more background noise. Yet, this data set had 15 patients before and after treatment, which results in a less robust machine learning model by default. However, the availability before and after specific treatment is not as common as it should be. Hence, even if ideally the solution is a larger sample size, in reality we have to be creative and manage with what was given. First, the model itself can be improved by using a different diversity index parameter. As exemplified in the the data metrics section, the Shannon diversity and Gini-Simpson didn't give enough distinction between the samples. Using diversity indexes, such as D50 that resembled the richness parameter in this data set, it might improve the model's performance. Second, especially with the small sample size, the research question can be divided into smaller portions in order to have better understanding. Meaning, first search which factors are affected by the different treatments significantly (such as protein levels or V-gene copy number variance) and then ask whether this factor correlates with severe irAEs. In this manner using a tree method for example, we can distinguish the reason for this response, and by that understnd why severe irAEs happen when given this treatment. By that we can predict that if we see a factor go over a certain threshold, then we can assume a likelihood for severe irAEs. Those are just suggestions that need to be further investigated in order to have a true basis rather than assumption. 
+
+(If you read this report thus far, thank you for you patience!)   
+
+## References
+
+1. Lozano AX, Chaudhuri AA, Nene A, Bacchiocchi A, Earland N, Vesely MD, Usmani A, Turner BE, Steen CB, Luca BA, Badri T, Gulati GS, Vahid MR, Khameneh F, Harris PK, Chen DY, Dhodapkar K, Sznol M, Halaban R, Newman AM. T cell characteristics associated with toxicity to immune checkpoint blockade in patients with melanoma. Nat Med. 2022 Feb;28(2):353-362. doi: 10.1038/s41591-021-01623-z.
+
+
+## Notes
+
+
+Gini diversity index of repertoires
+
+```{r Gini diversity of repertoires}
+gdi <- repDiversity(mtcr$data, .method = "gini", .do.norm = NA, .laplace = 0)
+barplot(gdi~pati, space=0, col = brewer.pal(5, name = "Purples"), 
+        panel.first=grid(NA,NULL, lty=2), xlab="Patients", ylab="Gini index",
+        main="Gini diversity index of repertoires", las=3, cex.names = 0.4)
+```
+
